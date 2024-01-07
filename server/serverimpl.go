@@ -152,6 +152,7 @@ func (s *server) Addr() net.Addr {
 }
 
 func (s *server) httpHandler(w http.ResponseWriter, req *http.Request) {
+	s.logger.Debugf("Calling HTTPHandler 1")
 	var connectionCallbacks serverTypes.ConnectionCallbacks
 	if s.settings.Callbacks != nil {
 		resp := s.settings.Callbacks.OnConnecting(req)
@@ -321,6 +322,7 @@ func (s *server) handlePlainHTTPRequest(req *http.Request, w http.ResponseWriter
 		connectionCallbacks.OnConnectionClose(agentConn)
 	}()
 
+	s.logger.Debugf("Calling onMessage in HTTP")
 	response := connectionCallbacks.OnMessage(agentConn, &request)
 
 	// Set the InstanceUid if it is not set by the callback.

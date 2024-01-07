@@ -2,7 +2,7 @@ exporters:
   otlp:
     endpoint: https://otlp.nr-data.net:443
     headers:
-      api-key: 8105c934e882f60913f1eec381b6291cf873NRAL
+      api-key:
   otlphttp/own_metrics:
     metrics_endpoint: http://localhost:4318/v1/metrics
 extensions:
@@ -12,7 +12,7 @@ receivers:
   otlp:
     protocols:
       http:
-        endpoint: 0.0.0.0:4318
+        endpoint: 0.0.0.0:4319
   prometheus/own_metrics:
     config:
       scrape_configs:
@@ -41,6 +41,6 @@ service:
     metrics:
       address: 0.0.0.0:8889
     resource:
-      service.instance.id: 01HKERKV3A06AFVGQT5ZYC0GEK
+      service.instance.id: 01HK73C29506AFVGQT5ZYC0GEK
       service.name: io.opentelemetry.collector
       service.version: 1.0.0

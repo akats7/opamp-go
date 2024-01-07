@@ -1,5 +1,5 @@
 server:
-  endpoint: wss://127.0.0.1:4320/v1/opamp
+  endpoint: https://127.0.0.1:4320/v1/opamp
 
 agent:
   #executable: ../../../../../opentelemetry-collector-contrib/bin/otelcontribcol_darwin_amd64

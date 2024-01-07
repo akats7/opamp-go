@@ -3,12 +3,13 @@ package internal
 import (
 	"context"
 	"errors"
-
 	"github.com/open-telemetry/opamp-go/client/types"
 	"github.com/open-telemetry/opamp-go/protobufs"
 )
 
 // receivedProcessor handles the processing of messages received from the Server.
+var proccount = 0
+
 type receivedProcessor struct {
 	logger types.Logger
 
@@ -50,6 +51,10 @@ func newReceivedProcessor(
 // the received message and performs any processing necessary based on what fields are set.
 // This function will call any relevant callbacks.
 func (r *receivedProcessor) ProcessReceivedMessage(ctx context.Context, msg *protobufs.ServerToAgent) {
+	r.logger.Debugf("ProcessReceivedMessage count: %v\n", proccount)
+	r.logger.Debugf("serverToAgent: %v\n", msg.String())
+	r.logger.Debugf("____")
+	proccount++
 	if r.callbacks != nil {
 		// Note that anytime we add a new command capabilities we need to add a check here.
 		// This is because we want to ignore commands that the agent does not have the capability

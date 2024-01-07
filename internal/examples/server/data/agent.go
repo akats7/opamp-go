@@ -425,6 +425,7 @@ func (agent *Agent) calcConnectionSettings(response *protobufs.ServerToAgent) {
 }
 
 func (agent *Agent) SendToAgent(msg *protobufs.ServerToAgent) {
+	fmt.Printf("agent conn: %v\n", agent.conn)
 	agent.conn.Send(context.Background(), msg)
 }
 

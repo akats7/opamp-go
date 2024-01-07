@@ -218,6 +218,8 @@ func recalculateInterval(interval time.Duration, resp *http.Response) time.Durat
 
 func (h *HTTPSender) prepareRequest(ctx context.Context) (*requestWrapper, error) {
 	msgToSend := h.nextMessage.PopPending()
+	h.logger.Debugf("agentToServer: %v\n", msgToSend.String())
+	h.logger.Debugf("____________")
 	if msgToSend == nil || proto.Equal(msgToSend, &protobufs.AgentToServer{}) {
 		// There is no pending message or the message is empty.
 		// Nothing to send.

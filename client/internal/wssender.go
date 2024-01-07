@@ -73,6 +73,8 @@ func (s *WSSender) sendNextMessage() error {
 }
 
 func (s *WSSender) sendMessage(msg *protobufs.AgentToServer) error {
+	s.logger.Debugf("AgentToServer: %v\n", msg.String())
+	s.logger.Debugf("__________")
 	if err := internal.WriteWSMessage(s.conn, msg); err != nil {
 		s.logger.Errorf("Cannot write WS message: %v", err)
 		// TODO: check if it is a connection error then propagate error back to Client and reconnect.

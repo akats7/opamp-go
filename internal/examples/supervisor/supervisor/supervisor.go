@@ -35,6 +35,9 @@ const agentVersion = "1.0.0"
 
 // Supervisor implements supervising of OpenTelemetry Collector and uses OpAMPClient
 // to work with an OpAMP Server.
+
+var count = 0
+
 type Supervisor struct {
 	logger types.Logger
 
@@ -82,7 +85,7 @@ func NewSupervisor(logger types.Logger) (*Supervisor, error) {
 		logger:                  logger,
 		agentVersion:            agentVersion,
 		hasNewConfig:            make(chan struct{}, 1),
-		effectiveConfigFilePath: "effective.yaml",
+		effectiveConfigFilePath: "effective1.yaml",
 	}
 
 	if err := s.loadConfig(); err != nil {
@@ -131,7 +134,8 @@ func (s *Supervisor) loadConfig() error {
 
 func (s *Supervisor) startOpAMP() error {
 
-	s.opampClient = client.NewWebSocket(s.logger)
+	//s.opampClient = client.NewWebSocket(s.logger)
+	s.opampClient = client.NewHTTP(s.logger)
 
 	settings := types.StartSettings{
 		OpAMPServerURL: s.config.Server.Endpoint,
@@ -223,6 +227,8 @@ service:
     logs:
       # Enables JSON log output for the Agent.
       encoding: json
+    metrics:
+      address: '0.0.0.0:8889'
     resource:
       # Set resource attributes required by OpAMP spec.
       # See https://github.com/open-telemetry/opamp-spec/blob/main/specification.md#agentdescriptionidentifying_attributes
@@ -235,6 +241,8 @@ service:
 
 extensions:
   health_check:
+    endpoint: '0.0.0.0:13134'
+
     # TODO: choose the endpoint dynamically.
 `,
 		agentType,
@@ -299,16 +307,29 @@ receivers:
         - job_name: 'otel-collector'
           scrape_interval: 10s
           static_configs:
-            - targets: ['0.0.0.0:8888']  
+            - targets: ['0.0.0.0:8889']
+  otlp:
+    protocols:
+      http:
+        endpoint: '0.0.0.0:4318'
+
 exporters:
   otlphttp/own_metrics:
     metrics_endpoint: %s
+  otlp:
+    endpoint: https://otlp.nr-data.net:443
+    headers:
+      api-key: 8105c934e882f60913f1eec381b6291cf873NRAL
 
 service:
   pipelines:
     metrics/own_metrics:
       receivers: [prometheus/own_metrics]
       exporters: [otlphttp/own_metrics]
+    traces:
+      receivers: [otlp]
+      exporters: [otlp]
+
 `, settings.DestinationEndpoint,
 		)
 	}
@@ -364,7 +385,7 @@ func (s *Supervisor) composeEffectiveConfig(config *protobufs.AgentRemoteConfig)
 		}
 	}
 
-	// Merge own metrics config.
+	//// Merge own metrics config.
 	ownMetricsCfg, ok := s.agentConfigOwnMetricsSection.Load().(string)
 	if ok {
 		if err := k.Load(rawbytes.Provider([]byte(ownMetricsCfg)), yaml.Parser()); err != nil {
@@ -379,6 +400,79 @@ func (s *Supervisor) composeEffectiveConfig(config *protobufs.AgentRemoteConfig)
 
 	// The merged final result is our effective config.
 	effectiveConfigBytes, err := k.Marshal(yaml.Parser())
+	//s.logger.Debugf("effectiveConfig String in calc %v\n", string(effectiveConfigBytes))
+	if err != nil {
+		return false, err
+	}
+
+	// Check if effective config is changed.
+	newEffectiveConfig := string(effectiveConfigBytes)
+	configChanged = false
+	if s.effectiveConfig.Load().(string) != newEffectiveConfig {
+		s.logger.Debugf("Effective config changed.")
+		s.effectiveConfig.Store(newEffectiveConfig)
+		configChanged = true
+	}
+
+	return configChanged, nil
+}
+
+// composeEffectiveConfig composes the effective config from multiple sources:
+// 1) the remote config from OpAMP Server, 2) the own metrics config section,
+// 3) the local override config that is hard-coded in the Supervisor.
+func (s *Supervisor) remoteToEffectiveConfig(config *protobufs.AgentRemoteConfig) (configChanged bool, err error) {
+	var k = koanf.New(".")
+
+	// Begin with empty config. We will merge received configs on top of it.
+	if err := k.Load(rawbytes.Provider([]byte{}), yaml.Parser()); err != nil {
+		return false, err
+	}
+
+	// Sort to make sure the order of merging is stable.
+	var names []string
+	for name := range config.Config.ConfigMap {
+		if name == "" {
+			// skip instance config
+			continue
+		}
+		names = append(names, name)
+	}
+
+	sort.Strings(names)
+
+	// Append instance config as the last item.
+	names = append(names, "")
+
+	// Merge received configs.
+	for _, name := range names {
+		item := config.Config.ConfigMap[name]
+		var k2 = koanf.New(".")
+		err := k2.Load(rawbytes.Provider(item.Body), yaml.Parser())
+		if err != nil {
+			return false, fmt.Errorf("cannot parse config named %s: %v", name, err)
+		}
+		err = k.Merge(k2)
+		if err != nil {
+			return false, fmt.Errorf("cannot merge config named %s: %v", name, err)
+		}
+	}
+
+	////// Merge own metrics config.
+	//ownMetricsCfg, ok := s.agentConfigOwnMetricsSection.Load().(string)
+	//if ok {
+	//	if err := k.Load(rawbytes.Provider([]byte(ownMetricsCfg)), yaml.Parser()); err != nil {
+	//		return false, err
+	//	}
+	//}
+
+	// Merge local config last since it has the highest precedence.
+	//if err := k.Load(rawbytes.Provider([]byte(s.composeExtraLocalConfig())), yaml.Parser()); err != nil {
+	//	return false, err
+	//}
+
+	// The merged final result is our effective config.
+	effectiveConfigBytes, err := k.Marshal(yaml.Parser())
+	//s.logger.Debugf("effectiveConfig String in calc %v\n", string(effectiveConfigBytes))
 	if err != nil {
 		return false, err
 	}
@@ -428,7 +522,7 @@ func (s *Supervisor) startAgent() {
 	s.healthCheckTicker = backoff.NewTicker(healthCheckBackoff)
 
 	// TODO: choose the port dynamically.
-	healthEndpoint := "http://localhost:13133"
+	healthEndpoint := "http://localhost:13134"
 	s.healthChecker = healthchecker.NewHttpHealthChecker(healthEndpoint)
 }
 
@@ -546,7 +640,7 @@ func (s *Supervisor) Shutdown() {
 	}
 }
 
-func (s *Supervisor) onMessage(ctx context.Context, msg *types.MessageData) {
+func (s *Supervisor) onMessage_O(ctx context.Context, msg *types.MessageData) {
 	configChanged := false
 	if msg.RemoteConfig != nil {
 		s.remoteConfig = msg.RemoteConfig
@@ -599,5 +693,152 @@ func (s *Supervisor) onMessage(ctx context.Context, msg *types.MessageData) {
 		case s.hasNewConfig <- struct{}{}:
 		default:
 		}
+	}
+}
+
+func (s *Supervisor) onMessage1(ctx context.Context, msg *types.MessageData) {
+	s.logger.Debugf("OnMessage Print\n")
+	//configChanged := false
+	if msg.RemoteConfig != nil {
+
+		//configChanged = true
+		s.remoteConfig = msg.RemoteConfig
+		s.logger.Debugf("Received remote config from server, hash=%x.", s.remoteConfig.ConfigHash)
+
+		// TODO validate config before applying
+
+		s.opampClient.SetRemoteConfigStatus(&protobufs.RemoteConfigStatus{
+			LastRemoteConfigHash: msg.RemoteConfig.ConfigHash,
+			Status:               protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED,
+		})
+
+	}
+
+	if msg.OwnMetricsConnSettings != nil {
+		s.setupOwnMetrics(ctx, msg.OwnMetricsConnSettings)
+	}
+
+	if msg.AgentIdentification != nil {
+		newInstanceId, err := ulid.Parse(msg.AgentIdentification.NewInstanceUid)
+		if err != nil {
+			s.logger.Errorf(err.Error())
+		}
+
+		s.logger.Debugf("Agent identify is being changed from id=%v to id=%v",
+			s.instanceId.String(),
+			newInstanceId.String())
+		s.instanceId = newInstanceId
+
+		// TODO: update metrics pipeline by altering configuration and setting
+		// the instance id when Collector implements https://github.com/open-telemetry/opentelemetry-collector/pull/5402.
+	}
+	//
+	err := s.opampClient.UpdateEffectiveConfig(ctx)
+	if err != nil {
+		s.logger.Errorf(err.Error())
+	}
+	//if configChanged {
+	//	s.logger.Debugf("Config is changed. Signal to restart the agent.")
+	//	// Signal that there is a new config.
+	//	select {
+	//	case s.hasNewConfig <- struct{}{}:
+	//	default:
+	//	}
+	//}
+}
+
+func (s *Supervisor) onMessage(ctx context.Context, msg *types.MessageData) {
+	s.logger.Debugf("message count: %v\n", count)
+	count++
+
+	configChanged := false
+	var err error
+	if msg.RemoteConfig != nil {
+		if msg.RemoteConfig.Config.ConfigMap[""].Body != nil {
+			s.logger.Debugf("Printing remote config: %v\n", msg.RemoteConfig.Config.ConfigMap[""].String())
+			configChanged, err = s.remoteToEffectiveConfig(msg.RemoteConfig)
+		} else {
+			s.remoteConfig = msg.RemoteConfig
+			s.logger.Debugf("Received remote config from server, hash=%x.", s.remoteConfig.ConfigHash)
+
+			configChanged, err = s.recalcEffectiveConfig()
+		}
+		if err != nil {
+			s.opampClient.SetRemoteConfigStatus(&protobufs.RemoteConfigStatus{
+				LastRemoteConfigHash: msg.RemoteConfig.ConfigHash,
+				Status:               protobufs.RemoteConfigStatuses_RemoteConfigStatuses_FAILED,
+				ErrorMessage:         err.Error(),
+			})
+		} else {
+			s.opampClient.SetRemoteConfigStatus(&protobufs.RemoteConfigStatus{
+				LastRemoteConfigHash: msg.RemoteConfig.ConfigHash,
+				Status:               protobufs.RemoteConfigStatuses_RemoteConfigStatuses_APPLIED,
+			})
+		}
+	}
+
+	if msg.OwnMetricsConnSettings != nil {
+		configChanged = s.setupOwnMetrics(ctx, msg.OwnMetricsConnSettings) || configChanged
+	}
+
+	if msg.AgentIdentification != nil {
+		newInstanceId, err := ulid.Parse(msg.AgentIdentification.NewInstanceUid)
+		if err != nil {
+			s.logger.Errorf(err.Error())
+		}
+
+		s.logger.Debugf("Agent identify is being changed from id=%v to id=%v",
+			s.instanceId.String(),
+			newInstanceId.String())
+		s.instanceId = newInstanceId
+
+		// TODO: update metrics pipeline by altering configuration and setting
+		// the instance id when Collector implements https://github.com/open-telemetry/opentelemetry-collector/pull/5402.
+	}
+
+	if configChanged {
+		err := s.opampClient.UpdateEffectiveConfig(ctx)
+		if err != nil {
+			s.logger.Errorf(err.Error())
+		}
+
+		s.logger.Debugf("Config is changed. Signal to restart the agent.")
+		// Signal that there is a new config.
+		select {
+		case s.hasNewConfig <- struct{}{}:
+		default:
+		}
+	}
+
+}
+
+func (s *Supervisor) printContents(msg *types.MessageData) {
+
+	if msg.RemoteConfig != nil {
+		s.logger.Debugf("YES: RemoteConfig")
+	}
+
+	if msg.OwnMetricsConnSettings != nil {
+		s.logger.Debugf("YES: OwnMetricsConnSettingsg")
+	}
+
+	if msg.OwnTracesConnSettings != nil {
+		s.logger.Debugf("YES: OwnTracesConnSettings")
+	}
+
+	if msg.OwnLogsConnSettings != nil {
+		s.logger.Debugf("YES: OwnLogsConnSettings")
+	}
+
+	if msg.OtherConnSettings != nil {
+		s.logger.Debugf("YES: OtherConnSettings")
+	}
+
+	if msg.PackageSyncer != nil {
+		s.logger.Debugf("YES: PackageSyncer")
+	}
+
+	if msg.AgentIdentification != nil {
+		s.logger.Debugf("YES: AgentIdentification")
 	}
 }
